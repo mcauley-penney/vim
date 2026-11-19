@@ -7599,17 +7599,12 @@ A jump table for the options with a short description can be found at |Q_op|.
 			global or local to window |global-local|
 	When 'scrolloff' and 'scrolloffpad' are greater than zero, allow blank
 	screen rows below the end of the file to supply missing context
-	requested by 'scrolloff'.
-
-	A small 'scrolloff' value requests that many rows of lower context
-	without requiring centering.
+	requested by 'scrolloff'. This creates a "padding" at EOF that matches
+	the number of lines requested by 'scrolloff'.
 
 	When the requested context fills or exceeds the space available around
 	the cursor line, place it approximately in the middle of the window,
 	using the same midpoint convention as |zz|.
-
-	This option only affects automatic cursor visibility near EOF.
-	Scrolling in the middle or at the beginning of the file is unchanged.
 
 	A value of 0 disables this feature.  Any value above 0 enables it.
 	For a window-local value, -1 means to use the global value.
