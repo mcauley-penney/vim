@@ -1452,6 +1452,23 @@ endfunc
 " - augment scrolloff only under EOF pressure (insufficient real lines below);
 " - do not change explicit "z" viewport placement command semantics;
 " - current scope is EOF-only, so BOF behavior remains unchanged.
+func s:scrolloffpad_view()
+  " Resolve the cursor row before reading the resulting viewport.
+  let row = winline()
+  let view = winsaveview()
+  " Do not query line('w$') here: it validates the cached bottom line and can
+  " prevent redraw from retrying the automatic scroll calculation.
+  return [line('.'), view.topline, row]
+endfunc
+
+func s:check_scrolloffpad_redraw(view, msg)
+  for pass in [1, 2]
+    redraw
+    call assert_equal(a:view, s:scrolloffpad_view(),
+	  \ printf('%s redraw=%d', a:msg, pass))
+  endfor
+endfunc
+
 func Test_scrolloffpad_zb_keeps_bottom_command_semantics()
   new
   resize 12
@@ -1513,21 +1530,188 @@ func Test_scrolloffpad_zb_is_one_shot_then_scrolloff_reapplies()
 endfunc
 
 func Test_scrolloffpad_has_no_mid_buffer_effect()
-  new
-  resize 12
-  setlocal scrolloff=10 scrolloffpad=0
-  call setline(1, map(range(1, 500), 'printf("line %d", v:val)'))
+  for so in [1, 3, 10, 999, 2147483647]
+    for command in ['150G', '150Gzb', '150Gz-']
+      let states = {}
+      for sop in [0, 1]
+        new
+        resize 12
+        setlocal nowrap
+        let &l:scrolloff = so
+        let &l:scrolloffpad = sop
+        call setline(1, map(range(1, 300), 'printf("line %d", v:val)'))
 
-  normal! gg150G
-  let topline_without_pad = winsaveview().topline
+        execute 'normal! gg' . command
+        let states[sop] = [s:scrolloffpad_view()]
+        " Keep the original gg150Gzb followed by j reproduction: do not
+        " redraw between explicit placement and the first movement.
+        for motion in ['j', 'k']
+          execute 'normal! ' . motion
+          let view = s:scrolloffpad_view()
+          call add(states[sop], view)
+          let msg = printf('scrolloff=%d sop=%d command=%s motion=%s',
+                \ so, sop, command, motion)
+          call s:check_scrolloffpad_redraw(view, msg)
+          call add(states[sop], s:scrolloffpad_view())
+        endfor
+        bwipe!
+      endfor
+      let msg = printf('scrolloff=%d command=%s', so, command)
+      for stage in range(len(states[0]))
+        call assert_equal(states[0][stage], states[1][stage],
+              \ printf('%s stage=%d', msg, stage))
+      endfor
+    endfor
+  endfor
+endfunc
 
-  setlocal scrolloffpad=1
-  normal! gg150G
-  let topline_with_pad = winsaveview().topline
+func Test_scrolloffpad_eof_redraw_stable()
+  for so in [1, 3, 5, 6, 7, 10, 20, 999, 2147483647]
+    for motion in ['jump', 'search']
+      for query_bottom in [0, 1]
+        new
+        resize 12
+        setlocal nowrap scrolloffpad=0
+        let &l:scrolloff = so
+        call setline(1, map(range(1, 200), 'printf("line %d", v:val)'))
 
-  call assert_equal(topline_without_pad, topline_with_pad)
+        " First establish the ordinary EOF view, then enable padding.
+        normal! ggG
+        call s:scrolloffpad_view()
+        setlocal scrolloffpad=1
+        if motion == 'jump'
+          normal! ggG
+        else
+          normal! gg
+          call assert_equal(200, search('^line 200$', 'W'))
+        endif
 
-  bwipe!
+        let view = s:scrolloffpad_view()
+        let msg = printf('scrolloff=%d motion=%s query_bottom=%d',
+              \ so, motion, query_bottom)
+        call assert_equal(200, view[0], msg)
+        call assert_true(view[2] < winheight(0), msg)
+        if query_bottom
+          call assert_equal(200, line('w$'), msg)
+        endif
+        call s:check_scrolloffpad_redraw(view, msg)
+        call assert_equal(200, line('w$'), msg)
+        bwipe!
+      endfor
+    endfor
+  endfor
+endfunc
+
+func Test_scrolloffpad_short_buffer_small_window()
+  for height in [1, 2, 3, 4, 5]
+    for length in [0, 1, 3, 8]
+      for so in [1, 3, 2147483647]
+        new
+        execute 'resize ' . height
+        setlocal nowrap scrolloffpad=1
+        let &l:scrolloff = so
+        if length > 0
+          call setline(1, map(range(1, length), 'printf("line %d", v:val)'))
+        endif
+
+        normal! ggG
+        " BOF limits the available upper context in a short buffer; an empty
+        " buffer and a one-row window keep their ordinary single-row view.
+        let last = max([1, length])
+        let row = min([last, max([(height + 1) / 2, height - so])])
+        let expected = [last, last - row + 1, row]
+        let msg = printf('height=%d length=%d so=%d', height, length, so)
+        call assert_equal(height, winheight(0), msg)
+        call assert_equal(expected, s:scrolloffpad_view(), msg)
+        call s:check_scrolloffpad_redraw(expected, msg)
+        call assert_equal(last, line('$'), msg)
+        bwipe!
+      endfor
+    endfor
+  endfor
+endfunc
+
+func Test_scrolloffpad_small_margin_at_eof()
+  for so in [1, 3, 5]
+    new
+    resize 12
+    setlocal nowrap scrolloffpad=1
+    let &l:scrolloff = so
+    call setline(1, map(range(1, 200), 'printf("line %d", v:val)'))
+
+    " A large jump must apply the requested margin before any redraw, rather
+    " than first leaving EOF at the bottom or forcing it into the middle.
+    normal! ggG
+    let expected = [200, 201 - winheight(0) + so, winheight(0) - so]
+    call assert_equal(expected, s:scrolloffpad_view(),
+          \ printf('scrolloff=%d jump', so))
+    call s:check_scrolloffpad_redraw(expected, printf('scrolloff=%d jump', so))
+
+    normal! gg190G
+    redraw
+    for lnum in range(191, 200)
+      normal! j
+      if lnum >= 197
+        let row = winheight(0) - so
+        let top = lnum - row + 1
+        let bottom = min([200, top + winheight(0) - 1])
+        let expected = [lnum, top, row]
+        let msg = printf('scrolloff=%d line=%d', so, lnum)
+        call assert_equal(expected, s:scrolloffpad_view(), msg)
+        call s:check_scrolloffpad_redraw(expected, msg)
+        call assert_equal(bottom, line('w$'), msg)
+      else
+        redraw
+      endif
+    endfor
+    call assert_equal(200, line('$'))
+    bwipe!
+  endfor
+endfunc
+
+func Test_scrolloffpad_eof_midpoint_matches_zz()
+  for height in [11, 12]
+    new
+    execute 'resize ' . height
+    setlocal nowrap scrolloff=0 scrolloffpad=0
+    call setline(1, map(range(1, 200), 'printf("line %d", v:val)'))
+
+    " Obtain the reference from explicit centering, with scrolloff disabled
+    " so automatic correction cannot change it during redraw.
+    normal! ggGzz
+    let centered = s:scrolloffpad_view()
+    call assert_equal([200, 195, 6], centered,
+          \ printf('zz height=%d', height))
+    call s:check_scrolloffpad_redraw(centered, 'zz reference')
+
+    for so in [6, 7, 10, 20, 999, 2147483647]
+      for motion in ['jump', 'step']
+        setlocal scrolloff=0 scrolloffpad=0
+        normal! gg
+        let &l:scrolloff = so
+        setlocal scrolloffpad=1
+        if motion == 'jump'
+          normal! G
+        else
+          normal! 190G
+          redraw
+          for lnum in range(191, 200)
+            normal! j
+            if lnum < 200
+              redraw
+            endif
+          endfor
+        endif
+
+        let msg = printf('height=%d scrolloff=%d motion=%s',
+              \ height, so, motion)
+        call assert_equal(centered, s:scrolloffpad_view(), msg)
+        call s:check_scrolloffpad_redraw(centered, msg)
+        call assert_equal(200, line('w$'), msg)
+      endfor
+    endfor
+    bwipe!
+  endfor
 endfunc
 
 func Test_scrolloffpad_changes_eof_pressure_only()
@@ -2028,13 +2212,10 @@ func Test_scrolloffpad_diff_eof_filler_behavior()
     let states[sop] = [short_state, long_state]
   endfor
 
-  let short_without = states[0][0]
-  let short_with = states[1][0]
-  " Environment/layout can shift direction of movement; require only that
-  " scrolloffpad changes the short-window viewport state under EOF filler.
-  call assert_true(short_with[2] != short_without[2]
-	\ || short_with[3] != short_without[3]
-	\ || short_with[4] != short_without[4])
+  " EOF filler already supplies the lower scrolloff context.  Neither the
+  " short window nor its scroll-bound peer should need additional padding.
+  call assert_true(states[0][0][5] >= 10)
+  call assert_equal(states[0], states[1])
 
   windo diffoff
   call assert_true(win_gotoid(short_wid))
