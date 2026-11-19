@@ -3284,7 +3284,7 @@ static int get_scroll_overlap(int dir)
     if (dir == FORWARD)
 	topline_back(&loff);
     else
-	botline_forw(&loff, use_scrolloffpad());
+	botline_forw(&loff, false);
 
     int h2 = loff.height;
     if (h2 == MAXCOL || h2 + h1 > min_height)
@@ -3292,7 +3292,7 @@ static int get_scroll_overlap(int dir)
     if (dir == FORWARD)
 	topline_back(&loff);
     else
-	botline_forw(&loff, use_scrolloffpad());
+	botline_forw(&loff, false);
 
     int h3 = loff.height;
     if (h3 == MAXCOL || h3 + h2 > min_height)
@@ -3300,7 +3300,7 @@ static int get_scroll_overlap(int dir)
     if (dir == FORWARD)
 	topline_back(&loff);
     else
-	botline_forw(&loff, use_scrolloffpad());
+	botline_forw(&loff, false);
 
     int h4 = loff.height;
     if (h4 == MAXCOL || h4 + h3 + h2 > min_height || h3 + h2 + h1 > min_height)

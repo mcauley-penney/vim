@@ -1860,6 +1860,40 @@ func Test_scrolloffpad_paging_to_eof()
   bwipe!
 endfunc
 
+func Test_scrolloffpad_pageup_real_overlap()
+  for so in [1, 3]
+    for lnum in [198, 199, 200]
+      let states = {}
+      for sop in [0, 1]
+        new
+        resize 12
+        setlocal nowrap
+        let &l:scrolloff = so
+        let &l:scrolloffpad = sop
+        call setline(1, map(range(1, 200), 'printf("line %d", v:val)'))
+
+        " Page upward from a top line near EOF.  Overlap must be based on
+        " real text, even when the following display rows are virtual.
+        execute 'normal! gg' . lnum . 'Gzt'
+        let initial = s:scrolloffpad_view()
+        execute "normal! \<C-B>"
+        let view = s:scrolloffpad_view()
+        let msg = printf('scrolloff=%d sop=%d line=%d', so, sop, lnum)
+        call assert_true(view[0] < initial[0], msg)
+        call assert_true(view[1] < initial[1], msg)
+        if so == 1 && lnum == 200
+          call assert_equal([198, 188, 11], view, msg)
+        endif
+        call s:check_scrolloffpad_redraw(view, msg)
+        let states[sop] = [initial, view]
+        bwipe!
+      endfor
+      call assert_equal(states[0], states[1],
+            \ printf('scrolloff=%d line=%d', so, lnum))
+    endfor
+  endfor
+endfunc
+
 func Test_scrolloffpad_autocmd_append_at_eof()
   let states = {}
   for sop in [0, 1]
