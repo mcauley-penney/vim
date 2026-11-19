@@ -1602,6 +1602,168 @@ func Test_scrolloffpad_eof_redraw_stable()
   endfor
 endfunc
 
+func Test_scrolloffpad_real_screen_context()
+  CheckOption smoothscroll
+
+  for so in [7, 999, 2147483647]
+    for scenario in ['asymmetric', 'wrapped_tail']
+      let states = {}
+      for sop in [0, 1]
+        new
+        resize 12
+        setlocal wrap smoothscroll
+        let &l:scrolloff = so
+        let &l:scrolloffpad = sop
+        call setline(1, map(range(1, 300), 'printf("line %d", v:val)'))
+
+        if scenario == 'asymmetric'
+          " A different height above and below the cursor exposes the
+          " difference between ordinary and EOF centering with smoothscroll.
+          call setline(1, repeat([repeat('x', winwidth(0) * 3 - 1)], 149))
+          normal! gg150Gk
+          call assert_equal(149, line('.'))
+        else
+          " Few buffer lines remain, but the last wrapped line supplies
+          " enough real screen rows.  Padding must not activate here either.
+          call setline(300, repeat('x', winwidth(0) * 8 - 1))
+          normal! gg299Gk
+          call assert_equal(298, line('.'))
+        endif
+
+        let view = s:scrolloffpad_view()
+        let states[sop] = [view, winsaveview().skipcol]
+        let msg = printf('scrolloff=%d sop=%d scenario=%s', so, sop, scenario)
+        call s:check_scrolloffpad_redraw(view, msg)
+        call assert_equal(states[sop][1], winsaveview().skipcol, msg)
+        bwipe!
+      endfor
+      call assert_equal(states[0], states[1],
+            \ printf('scrolloff=%d scenario=%s', so, scenario))
+    endfor
+  endfor
+endfunc
+
+func Test_scrolloffpad_wrapped_eof_context()
+  CheckOption smoothscroll
+
+  for smooth in [0, 1]
+    for tail_rows in [3, 8]
+      for so in [3, 999]
+        for lnum in [199, 200]
+          let states = {}
+          for sop in [0, 1]
+            new
+            resize 12
+            setlocal wrap
+            let &l:smoothscroll = smooth
+            let &l:scrolloff = so
+            let &l:scrolloffpad = sop
+            call setline(1, map(range(1, 200), 'printf("line %d", v:val)'))
+            call setline(200, repeat('x', winwidth(0) * tail_rows - 1))
+
+            execute 'normal! gg' . lnum . 'G0'
+            let view = s:scrolloffpad_view()
+            let states[sop] = view
+            let msg = printf('smooth=%d tail=%d so=%d line=%d sop=%d',
+                  \ smooth, tail_rows, so, lnum, sop)
+            call s:check_scrolloffpad_redraw(view, msg)
+            call assert_equal(0, winsaveview().skipcol, msg)
+            if sop && (so == 999 || tail_rows == 8)
+                  \ && (lnum == 200 || tail_rows == 3)
+              " Forced centering must also match zz for wrapped geometry.
+              setlocal scrolloff=0 scrolloffpad=0
+              normal! zz
+              call assert_equal(s:scrolloffpad_view(), view, msg)
+            endif
+            bwipe!
+          endfor
+
+          if lnum == 199 && (tail_rows == 8 || so == 3)
+            " The wrapped tail supplies enough real rows below the cursor.
+            call assert_equal(states[0], states[1], msg)
+          elseif so == 3 && tail_rows == 3
+            " All wrapped cursor-line rows fit, followed by three blank rows.
+            call assert_equal([200, 191 + tail_rows, 10 - tail_rows],
+                  \ states[1], msg)
+          else
+            call assert_true(states[1][2] < states[0][2], msg)
+          endif
+        endfor
+      endfor
+    endfor
+  endfor
+endfunc
+
+func Test_scrolloffpad_smoothscroll_clipped_cursor()
+  CheckOption smoothscroll
+
+  " A cursor line taller than the window still needs its ordinary clipped
+  " view.  Its hidden wrapped rows must not be mistaken for space to pad.
+  for height in [4, 12]
+    for so in [1, 3, 999]
+      let states = {}
+      for sop in [0, 1]
+        new
+        execute 'resize ' . height
+        setlocal wrap smoothscroll
+        let &l:scrolloff = so
+        let &l:scrolloffpad = sop
+        call setline(1, map(range(1, 200), 'printf("line %d", v:val)'))
+        call setline(200, repeat('x', winwidth(0) * 16 - 1))
+
+        normal! ggG$
+        let view = s:scrolloffpad_view()
+        let skipcol = winsaveview().skipcol
+        let msg = printf('height=%d so=%d sop=%d', height, so, sop)
+        call assert_equal([200, 200, height], view, msg)
+        call assert_equal((16 - height) * winwidth(0), skipcol, msg)
+        call s:check_scrolloffpad_redraw(view, msg)
+        call assert_equal(skipcol, winsaveview().skipcol, msg)
+        let states[sop] = [view, skipcol]
+        bwipe!
+      endfor
+      call assert_equal(states[0], states[1], msg)
+    endfor
+  endfor
+endfunc
+
+func Test_scrolloffpad_folded_eof_context()
+  CheckFeature folding
+
+  for so in [3, 999]
+    for lnum in [188, 193, 194, 197, 200]
+      let states = {}
+      for sop in [0, 1]
+        new
+        resize 12
+        setlocal nowrap foldmethod=manual foldenable foldopen=
+        call setline(1, map(range(1, 200), 'printf("line %d", v:val)'))
+        195,199fold
+        let &l:scrolloff = so
+        let &l:scrolloffpad = sop
+
+        execute 'normal! gg' . lnum . 'G'
+        let view = s:scrolloffpad_view()
+        let states[sop] = view
+        let msg = printf('so=%d line=%d sop=%d', so, lnum, sop)
+        call assert_equal(195, foldclosed(197), msg)
+        call assert_equal(199, foldclosedend(197), msg)
+        call s:check_scrolloffpad_redraw(view, msg)
+        bwipe!
+      endfor
+
+      if lnum == 188 || (so == 3 && lnum == 193)
+        call assert_equal(states[0], states[1], msg)
+      else
+        " The five-line fold supplies one screen row, including when the
+        " cursor is inside it.  Buffer-line distance alone is insufficient.
+        call assert_equal(so == 3 ? 9 : 6, states[1][2], msg)
+        call assert_true(states[1][2] < states[0][2], msg)
+      endif
+    endfor
+  endfor
+endfunc
+
 func Test_scrolloffpad_short_buffer_small_window()
   for height in [1, 2, 3, 4, 5]
     for length in [0, 1, 3, 8]
@@ -1922,6 +2084,48 @@ func Test_scrolloffpad_halfpage_eof_geometry()
   endfor
 endfunc
 
+func Test_scrolloffpad_halfpage_eof_interactive()
+  CheckScreendump
+  CheckRunVimInTerminal
+  CheckFeature folding
+
+  let save_termwinsize = &termwinsize
+  set termwinsize=
+  try
+    let lines =<< trim END
+        set scrolloff=3 scrolloffpad=1 laststatus=0 nowrap
+        set foldmethod=marker foldlevel=99
+        call setline(1, map(range(1, 200), 'printf("line %d", v:val)'))
+        nnoremap n gj
+        nnoremap e gk
+        normal! gg
+    END
+    call writefile(lines, 'XScrolloffpadHalfpage', 'D')
+    let buf = RunVimInTerminal('-S XScrolloffpadHalfpage',
+          \ #{rows: 13, cols: 60})
+    try
+      " Send real input without :normal or an explicit redraw in the child.
+      call term_sendkeys(buf, repeat("\<C-D>", 40))
+      call WaitForAssert({-> assert_equal(9, term_getcursor(buf)[0])})
+      call assert_equal('line 192', trim(term_getline(buf, 1)))
+      call VerifyScreenDump(buf, 'Test_scrolloffpad_small_margin', {})
+
+      " Colemak screen-line motions must not finish the padding in stages.
+      call term_sendkeys(buf, 'e')
+      call WaitForAssert({-> assert_equal(8, term_getcursor(buf)[0])})
+      call assert_equal('line 192', trim(term_getline(buf, 1)))
+      call assert_equal('line 200', trim(term_getline(buf, 9)))
+      call term_sendkeys(buf, 'n')
+      call WaitForAssert({-> assert_equal(9, term_getcursor(buf)[0])})
+      call VerifyScreenDump(buf, 'Test_scrolloffpad_small_margin', {})
+    finally
+      call StopVimInTerminal(buf)
+    endtry
+  finally
+    let &termwinsize = save_termwinsize
+  endtry
+endfunc
+
 func Test_scrolloffpad_pageup_real_overlap()
   for so in [1, 3]
     for lnum in [198, 199, 200]
@@ -2111,6 +2315,39 @@ func Test_scrolloffpad_basic()
   let &termwinsize = save_termwinsize
 endfunc
 
+func Test_scrolloffpad_small_margin_screendump()
+  CheckScreendump
+  CheckRunVimInTerminal
+
+  let save_termwinsize = &termwinsize
+  set termwinsize=
+  try
+    let lines =<< trim END
+        set scrolloff=3 scrolloffpad=1 laststatus=0
+        call setline(1, map(range(1, 200), 'printf("line %d", v:val)'))
+        normal! gg
+    END
+    call writefile(lines, 'XScrolloffpadSmallMargin', 'D')
+    " Twelve text rows and one command-line row.
+    let buf = RunVimInTerminal('-S XScrolloffpadSmallMargin',
+          \ #{rows: 13, cols: 60})
+    try
+      call term_sendkeys(buf, ":normal! G\<CR>")
+      call term_sendkeys(buf, "\<C-L>")
+      call WaitForAssert({-> assert_equal('line 200', trim(term_getline(buf, 9)))})
+      call assert_equal('line 192', trim(term_getline(buf, 1)))
+      for row in [10, 11, 12]
+        call assert_equal('~', trim(term_getline(buf, row)))
+      endfor
+      call VerifyScreenDump(buf, 'Test_scrolloffpad_small_margin', {})
+    finally
+      call StopVimInTerminal(buf)
+    endtry
+  finally
+    let &termwinsize = save_termwinsize
+  endtry
+endfunc
+
 func Test_scrolloffpad_smoothscroll()
   CheckScreendump
   CheckRunVimInTerminal
@@ -2235,6 +2472,66 @@ func Test_scrolloffpad_in_diff_mode()
   let &scrolloff = save_so
   let &scrolloffpad = save_sop
   let &splitright = save_splitright
+endfunc
+
+func Test_scrolloffpad_diff_eof_context()
+  CheckFeature diff
+
+  let save_diffopt = &diffopt
+  set diffopt+=filler
+  try
+    for so in [3, 999]
+      for filler in [2, 8]
+        let states = {}
+        for sop in [0, 1]
+          12new
+          call setline(1, map(range(1, 100), 'printf("line %d", v:val)'))
+          diffthis
+          let short_wid = win_getid()
+          vnew
+          call setline(1, map(range(1, 100 + filler), 'printf("line %d", v:val)'))
+          diffthis
+          " Isolate filler geometry from the scroll-bound integration test.
+          windo setlocal noscrollbind nocursorbind foldcolumn=0
+          windo normal! zR
+          call win_gotoid(short_wid)
+          let &l:scrolloff = so
+          let &l:scrolloffpad = sop
+
+          normal! ggG
+          let view = s:scrolloffpad_view()
+          let states[sop] = [view, winsaveview().topfill]
+          let msg = printf('so=%d filler=%d sop=%d', so, filler, sop)
+          call assert_equal(filler, diff_filler(101), msg)
+          call assert_equal(0, winsaveview().topfill, msg)
+          call s:check_scrolloffpad_redraw(view, msg)
+          call assert_equal(0, winsaveview().topfill, msg)
+          if sop && so == 3 && filler == 2
+            let [row, col] = win_screenpos(0)
+            call assert_equal('-', screenstring(row + 9, col), msg)
+            call assert_equal('-', screenstring(row + 10, col), msg)
+            call assert_equal('~', screenstring(row + 11, col), msg)
+          endif
+          windo diffoff
+          bwipe!
+          bwipe!
+        endfor
+
+        if filler == 8
+          " Enough real filler: preserve the ordinary diff viewport.
+          call assert_equal(states[0], states[1], msg)
+        else
+          " Two filler rows and one blank row supply scrolloff=3.  A large
+          " request instead uses the upper midpoint of this 12-row window.
+          let row = so == 3 ? 9 : 6
+          call assert_equal([100, 101 - row, row], states[1][0], msg)
+          call assert_true(states[1][0][2] < states[0][0][2], msg)
+        endif
+      endfor
+    endfor
+  finally
+    let &diffopt = save_diffopt
+  endtry
 endfunc
 
 func Test_scrolloffpad_diff_eof_filler_behavior()
