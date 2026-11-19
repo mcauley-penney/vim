@@ -1860,6 +1860,68 @@ func Test_scrolloffpad_paging_to_eof()
   bwipe!
 endfunc
 
+func Test_scrolloffpad_halfpage_eof_geometry()
+  CheckFeature folding
+
+  for height in [11, 12]
+    for so in [1, 3, 5, 6, 999, 2147483647]
+      for folds in ['manual', 'marker', 'closed']
+        new
+        execute 'resize ' . height
+        setlocal nowrap scrolloffpad=1 foldmethod=manual foldopen=
+        let &l:scrolloff = so
+        call setline(1, map(range(1, 200), 'printf("line %d", v:val)'))
+        if folds == 'marker'
+          setlocal foldmethod=marker
+        elseif folds == 'closed'
+          195,199fold
+        endif
+
+        normal! ggG
+        let expected = s:scrolloffpad_view()
+        let msg = printf('height=%d so=%d folds=%s', height, so, folds)
+        call assert_equal(max([(height + 1) / 2, height - so]),
+              \ expected[2], msg)
+
+        normal! gg
+        for step in range(100)
+          " Do not use :normal or force a redraw between input events.
+          call feedkeys("\<C-D>", 'xt')
+          if line('.') == 200
+            break
+          endif
+        endfor
+        call assert_equal(expected, s:scrolloffpad_view(), msg)
+        call s:check_scrolloffpad_redraw(expected, msg)
+        call feedkeys('gk', 'xt')
+        call s:check_scrolloffpad_redraw(s:scrolloffpad_view(), msg . ' up')
+        call feedkeys('gj', 'xt')
+        call assert_equal(expected, s:scrolloffpad_view(), msg . ' down')
+
+        call feedkeys("1\<C-U>", 'xt')
+        call s:check_scrolloffpad_redraw(s:scrolloffpad_view(), msg . ' Ctrl-U')
+        call feedkeys("\<C-D>", 'xt')
+        call assert_equal(expected, s:scrolloffpad_view(), msg . ' Ctrl-D')
+
+        let states = {}
+        for sop in [0, 1]
+          let &l:scrolloffpad = sop
+          normal! gg100G
+          let states[sop] = []
+          for step in range(3)
+            call feedkeys("\<C-D>", 'xt')
+            let view = s:scrolloffpad_view()
+            call add(states[sop], view)
+            call s:check_scrolloffpad_redraw(view, msg . ' middle')
+          endfor
+        endfor
+        call assert_equal(states[0], states[1], msg . ' middle')
+        bwipe!
+      endfor
+    endfor
+  endfor
+endfunc
+
 func Test_scrolloffpad_pageup_real_overlap()
   for so in [1, 3]
     for lnum in [198, 199, 200]

@@ -3356,8 +3356,8 @@ static int scroll_with_sms(int dir, long count, long *curscount)
 
 /*
  * Move screen "count" (half) pages up ("dir" is BACKWARD) or down ("dir" is
- * FORWARD) and update the screen. Handle moving the cursor and not scrolling
- * to reveal end of buffer lines for half-page scrolling with CTRL-D and CTRL-U.
+ * FORWARD) and update the screen. Without EOF padding, half-page scrolling
+ * moves the cursor without scrolling to reveal end of buffer lines.
  *
  * Return FAIL for failure, OK otherwise.
  */
@@ -3450,6 +3450,20 @@ pagescroll(int dir, long count, int half)
 	beginline(BL_SOL | BL_FIX);
     else if (p_sol)
 	nv_g_home_m_cmd(&ca);
+
+    if (half)
+    {
+	int eof_context;
+
+	// cursor_correct() may mark the view valid after ignoring the lower
+	// context at EOF.  Apply the missing padding before returning, rather
+	// than leaving it for the next cursor movement.
+	if (scrolloffpad_eof_pressure(get_scrolloff_value(), &eof_context))
+	{
+	    curwin->w_valid &= ~VALID_TOPLINE;
+	    update_topline();
+	}
+    }
 
     return did_move ? OK : FAIL;
 }
